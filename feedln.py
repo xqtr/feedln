@@ -300,7 +300,7 @@ def display_help_categories(stdscr):
         "R: Mark All Categories as read\n"
         "U: Mark All Categories as unread\n"
         "e: Edit feeds with text editor\n"
-        "!: Delete database file. Reopen the program!"
+        "!: Delete database file. Reopen the program!\n"
         "#: Clear database from feeds, that don't exist in feeds file\n"
         "h: Help\n"
     )
