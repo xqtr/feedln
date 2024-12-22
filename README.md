@@ -11,6 +11,8 @@
 
 Feedln is a command-line RSS feed reader that allows users to manage and read their favorite feeds. It provides a simple interface to view, update, and categorize feeds, as well as mark items as read or unread.
 
+![feedln](image.png)
+
 ## Features
 
 - Feeds are stored/loaded from CSV file
