@@ -3,7 +3,7 @@ import curses
 import csv
 import feedparser
 import sqlite3
-#from collections import defaultdict
+import requests
 import time
 from bs4 import BeautifulSoup
 import os
@@ -12,20 +12,34 @@ import pyperclip
 import configparser
 from textwrap import wrap
 import re
+import logging
 
 program = "Feedln"
-version = "1.0.0"
+version = "1.0.1"
 database = "feedln.sq3"
 feedfile = "feedln.csv"
 cfgfile = "feedln.cfg"
+logfile = "feedln.log"
+reqtimeout = 8
 
 browser = "firefox"
 media = "mpv"
 xterm = "-fa 'Monospace' -fs 14"
 editor = "nano"
 
+logging.basicConfig(
+    filename=logfile,  # Log file name
+    level=logging.INFO,      # Log level
+    format='%(asctime)s - %(levelname)s - %(message)s'  # Log message format
+)
+
+def log_event(message):
+    """Log an event with the specified message."""
+    logging.info(message)  # Log the message as an info level event
+
+
 def load_config():
-    global media, xterm, editor
+    global media, xterm, editor,reqtimeout
     config_file = cfgfile  # Assuming cfgfile is the path to your config file
     if os.path.exists(config_file):
         config = configparser.ConfigParser()
@@ -35,6 +49,8 @@ def load_config():
             browser = config['Settings'].get('browser', browser)
             xterm = config['Settings'].get('xterm', xterm)
             editor = config['Settings'].get('editor', editor)
+            reqtimeout = int(config['Settings'].get('reqtimeout', reqtimeout))
+
 
 def check_feed_file():
     global feedfile
@@ -179,29 +195,36 @@ def fetch_feed_items(conn, feed_id,sort=1):
     return cursor.fetchall()
 
 # Update feed items in database
-def update_feed_items(conn, feed):
+def update_feed_items(stdscr,conn, feed):
+    global reqtimeout
     cursor = conn.cursor()
-    parsed_feed = feedparser.parse(feed[2])
-    for entry in parsed_feed.entries:
-        #print(entry.get("link"))
-        #print(entry.get("comments"))
-        #print(entry.get("published"))
-        #print(entry.get("author"))
-        #print(entry.get("post-id"))
-        #print(entry.published_parsed)
-        updated_parsed = entry.get("updated_parsed")
-        created_parsed = entry.get("created_parsed")
+    try:
+        response = requests.get(feed[2], timeout=reqtimeout)
+        if response.status_code == 200:
+            parsed_feed = feedparser.parse(response.content)  # Parse the content with feedparser
+            for entry in parsed_feed.entries:
+                updated_parsed = entry.get("updated_parsed")
+                created_parsed = entry.get("created_parsed")
 
-        timestamp_update = int(time.mktime(updated_parsed)) if updated_parsed else 0
-        timestamp_create = int(time.mktime(created_parsed)) if created_parsed else 0
-        content = entry.get("content", [{}])[0].get("value", "")
-        cursor.execute(
-            """
-            INSERT OR IGNORE INTO feed_items (feed_id, title, summary, content, last_updated, created, link)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (feed[0], entry.title, entry.summary, content, timestamp_update, timestamp_create, entry.link)
-        )
+                timestamp_update = int(time.mktime(updated_parsed)) if updated_parsed else 0
+                timestamp_create = int(time.mktime(created_parsed)) if created_parsed else 0
+                content = entry.get("content", [{}])[0].get("value", "")
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO feed_items (feed_id, title, summary, content, last_updated, created, link)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (feed[0], entry.title, entry.summary, content, timestamp_update, timestamp_create, entry.link)
+                )
+        else:
+            txt = f"Failed to retrieve: {feed[2]} Code:{response.status_code}"
+            footerpop(stdscr,txt,1)
+            log_event(txt) 
+    except:
+        txt = f"Timedout to retrieve: {feed[2]}"
+        footerpop(stdscr,txt,1)
+        log_event(txt) 
+    
     conn.commit()
     
 def get_feed_item_counts_by_category(conn, category):
@@ -263,9 +286,8 @@ def update_feeds_by_category(conn, category,stdscr):
     for feed in feeds:
         text = f"Updating: {feed[2]}"
         footer(stdscr,text)
-        time.sleep(0.3)
         stdscr.refresh()
-        update_feed_items(conn, feed)
+        update_feed_items(stdscr,conn, feed)
 
 # 0 Unread : 1 Read
 def mark_all_items_as(conn, feed_id,mark):
@@ -279,7 +301,6 @@ def mark_category_as(conn,category,stdscr,mark):
     for feed in feeds:
         text = f"Marking: {feed[2]}"
         footer(stdscr,text)
-        time.sleep(0.3)
         stdscr.refresh()
         mark_all_items_as(conn, feed[0],mark)
 
@@ -300,6 +321,7 @@ def display_help_categories(stdscr):
         "R: Mark All Categories as read\n"
         "U: Mark All Categories as unread\n"
         "e: Edit feeds with text editor\n"
+        "l: Watch log file, if exists, with external editor"
         "!: Delete database file. Reopen the program!\n"
         "#: Clear database from feeds, that don't exist in feeds file\n"
         "h: Help\n"
@@ -378,7 +400,7 @@ def display_help_feeds(stdscr):
 
 # Function to display categories
 def display_categories(stdscr, conn):
-    global feedfile,editor,xterm
+    global feedfile,editor,xterm,logfile
     curses.curs_set(0)  # Disable cursor
     categories = fetch_categories(conn)
     current_category = 0
@@ -454,6 +476,8 @@ def display_categories(stdscr, conn):
             clear_feeds_not_in_csv(stdscr,conn,feedfile)
         elif key == ord("e"):
             os.system(f"xterm {xterm} -e {editor} {feedfile}")
+        elif key == ord("l"):
+            os.system(f"xterm {xterm} -e {editor} {logfile}")
 
 def header(stdscr,text):
     height, width = stdscr.getmaxyx()
@@ -548,7 +572,7 @@ def display_feeds(stdscr, conn, category):
             display_feed_items(stdscr, conn, feeds[current_feed], category)
         elif key == ord('f'):
             footer(stdscr, "Fetching Feed...")
-            update_feed_items(conn, feeds[current_feed])
+            update_feed_items(stdscr,conn, feeds[current_feed])
         elif key == 27 or key == curses.KEY_LEFT:  # ESC key
             break
         elif key == ord("q"):
