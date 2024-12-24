@@ -711,7 +711,7 @@ def display_feed_entry(stdscr, conn, feed_item):
     plain_text = soup.get_text()
 
     # Wrap the text to fit the terminal width
-    max_length = curses.COLS - 1  # Leave space for cursor
+    max_length = maxlength(stdscr) - 1  # Leave space for cursor
     wrapped_lines = []
 
     lines = plain_text.splitlines()  # Split the text into lines
@@ -727,7 +727,7 @@ def display_feed_entry(stdscr, conn, feed_item):
 
     while True:
         stdscr.clear()
-        max_length = curses.COLS - 1
+        max_length = maxlength(stdscr) - 1
         stdscr.addstr(0, 0, f"Title:")
         stdscr.addstr(0, max_length-28, f"Date:")
         stdscr.addstr(1, 0, f"{title[:max_length]}", curses.A_BOLD)
