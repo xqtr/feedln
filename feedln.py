@@ -79,8 +79,23 @@ def setup_database():
             id INTEGER PRIMARY KEY,
             name TEXT,
             url TEXT UNIQUE,
-            category TEXT,
-            tags TEXT
+            tags TEXT,
+            category TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS feed_categories (
+            feed_id INTEGER,
+            category_id INTEGER,
+            FOREIGN KEY (feed_id) REFERENCES feeds (id),
+            FOREIGN KEY (category_id) REFERENCES categories (id),
+            PRIMARY KEY (feed_id, category_id)
         )
     """)
     cursor.execute("""
@@ -127,11 +142,20 @@ def confirm(stdscr,text):
         return False
 
 def delete_database_file(stdscr):
-    global database
-    if confirm(stdscr,"Delete database? Write 'yes' to confirm:"):
+    global database,feedfile
+    if confirm(stdscr,"Reset database? Write 'yes' to confirm:"):
         try:
-            os.remove(database)
-            footer(stdscr,f"Database file '{database}' has been deleted.")
+            conn = sqlite3.connect(database)
+            cursor = conn.cursor()
+            # Drop existing tables
+            cursor.execute("DROP TABLE IF EXISTS feed_items")
+            cursor.execute("DROP TABLE IF EXISTS feed_categories")
+            cursor.execute("DROP TABLE IF EXISTS categories")
+            cursor.execute("DROP TABLE IF EXISTS feeds")
+            # Recreate tables
+            conn = setup_database()  # Recreate the database and tables
+            load_feeds_to_db(feedfile, conn)
+            footer(stdscr,f"Database has been reset and tables recreated.")
             stdscr.refresh()
             time.sleep(1)
         except Exception as e:
@@ -139,7 +163,7 @@ def delete_database_file(stdscr):
             stdscr.refresh()
             time.sleep(2)
     else:
-        footerpop(stdscr,"Deletion canceled.")
+        footerpop(stdscr,"Reset canceled.")
     curses.curs_set(0)
 
 # Load feeds from CSV into database
@@ -148,37 +172,67 @@ def load_feeds_to_db(csv_file, conn):
     with open(csv_file, mode="r") as file:
         reader = csv.DictReader(file)
         for row in reader:
-            try:
-                cursor.execute(
-                    """
-                    INSERT OR IGNORE INTO feeds (name, url, category, tags)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (row["Name"], row["URL"], row.get("Category", "Uncategorized"), row.get("Tags", ""))
-                )
-            except sqlite3.IntegrityError as e:
-                print(f"Skipping duplicate feed: {row['URL']} - {e}")
+            # Skip empty lines or lines starting with '#'
+            if not row:
+                continue
+
+            if row['Name'].startswith('#'):
+                continue
+            else:
+                try:
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO feeds (name, url, tags)
+                        VALUES (?, ?, ?)
+                        """,
+                        (row["Name"], row["URL"], row.get("Tags", ""))
+                    )
+                    feed_id = cursor.lastrowid  # Get the last inserted feed ID
+
+                    # Handle multiple categories, split by ';'
+                    category_field = row.get("Category")  # Get the Category field
+                    if category_field:  # Check if the field is not None or empty
+                        categories = category_field.split(";")  # Split categories by semicolon
+                        for category in categories:
+                            category = category.strip()  # Remove whitespace
+                            cursor.execute(
+                                """
+                                INSERT OR IGNORE INTO categories (name)
+                                VALUES (?)
+                                """,
+                                (category,)
+                            )
+                            cursor.execute(
+                                """
+                                INSERT OR IGNORE INTO feed_categories (feed_id, category_id)
+                                SELECT ?, id FROM categories WHERE name = ?
+                                """,
+                                (feed_id, category)
+                            )
+                except sqlite3.IntegrityError as e:
+                    print(f"Skipping duplicate feed: {row['URL']} - {e}")
     conn.commit()
 
 # Fetch categories from database
 def fetch_categories(conn):
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT category FROM feeds")
-    return [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT DISTINCT name, id FROM categories")  # Fetch distinct category names
+    categories = cursor.fetchall()
+    return [(category[0],category[1]) for category in categories]  # Return a list of category names
 
 # Fetch feeds by category
-def fetch_feeds_by_category(conn, category,order=1):
-    orderby=""
-    if order == 1: 
-        orderby = "name"
-    elif order == 2: 
-        orderby = "id"
-    elif order == 3:
-        orderby = "url"
-
+def fetch_feeds_by_category(conn, category, orderby='c.name'):
     cursor = conn.cursor()
-    cursor.execute(f"SELECT id, name, url, tags FROM feeds WHERE category = ? ORDER BY {orderby} ASC", (category,))
-    return cursor.fetchall()
+    cursor.execute(f"""
+        SELECT f.id, f.name AS feed_name, f.url, f.tags 
+        FROM feeds f
+        JOIN feed_categories fc ON f.id = fc.feed_id
+        JOIN categories c ON fc.category_id = c.id
+        WHERE c.name = ? 
+        ORDER BY {orderby} ASC
+    """, (category,))
+    feeds = cursor.fetchall()
+    return feeds  # Return the list of feeds
 
 # Fetch items for a feed
 def fetch_feed_items(conn, feed_id,sort=1):
@@ -228,13 +282,14 @@ def update_feed_items(stdscr,conn, feed):
     conn.commit()
     
 def get_feed_item_counts_by_category(conn, category):
+    print(category)
     cursor = conn.cursor()
     cursor.execute("""
         SELECT COUNT(fi.id) AS total_items, 
                SUM(CASE WHEN fi.is_read = 0 THEN 1 ELSE 0 END) AS total_unread
         FROM feed_items fi
         JOIN feeds f ON fi.feed_id = f.id
-        WHERE f.category = ?
+        WHERE f.id IN (SELECT feed_id FROM feed_categories WHERE category_id = ?)
     """, (category,))
     return cursor.fetchone()
 
@@ -400,9 +455,10 @@ def display_help_feeds(stdscr):
 
 # Function to display categories
 def display_categories(stdscr, conn):
-    global feedfile,editor,xterm,logfile
+    global feedfile, editor, xterm, logfile
     curses.curs_set(0)  # Disable cursor
     categories = fetch_categories(conn)
+
     current_category = 0
     start_index = 0  # Track the starting index for display
 
@@ -413,10 +469,14 @@ def display_categories(stdscr, conn):
 
         # Display categories within the current view
         for i in range(start_index, min(start_index + max_display, len(categories))):
-            total = get_feed_item_counts_by_category(conn, categories[i])
-            all = total[0]
-            unread = 0 if total[1] is None else total[1]
-            line = f"> {unread:3} | {all:3} | {categories[i]}" if i == current_category else f"  {unread:3} | {all:3} | {categories[i]}"
+            total = get_feed_item_counts_by_category(conn, categories[i][1])
+            
+            #print(total)
+            #stdscr.getch()
+            
+            all_items = total[0] if total and total[0] is not None else 0  # Default to 0 if None
+            unread = total[1] if total and total[1] is not None else 0  # Default to 0 if None
+            line = f"> {unread:3} | {all_items:3} | {categories[i][0]}" if i == current_category else f"  {unread:3} | {all_items:3} | {categories[i][0]}"
             if unread > 0:
                 stdscr.addstr(i - start_index + 1, 0, line, curses.color_pair(1) | curses.A_BOLD)
             else:
@@ -450,24 +510,24 @@ def display_categories(stdscr, conn):
             current_category = len(categories) - 1  # Scroll to the end
             start_index = max(0, len(categories) - max_display)
         elif key == ord("\n") or key == curses.KEY_RIGHT:  # Enter key
-            display_feeds(stdscr, conn, categories[current_category])
+            display_feeds(stdscr, conn, categories[current_category][0])
         elif key == ord("f"):  # Fetch one category
-            update_feeds_by_category(conn, categories[current_category], stdscr)
+            update_feeds_by_category(conn, categories[current_category][0], stdscr)
         elif key == ord("F"):  # Update All Categories
             for cat in categories:
-                update_feeds_by_category(conn, cat, stdscr)
+                update_feeds_by_category(conn, cat[0], stdscr)
         elif key == ord("q") or key == curses.KEY_LEFT:
             break
         elif key == ord("r"):  # Mark Category as read
-            mark_category_as(conn, categories[current_category], stdscr, 1)
+            mark_category_as(conn, categories[current_category][0], stdscr, 1)
         elif key == ord("u"):  # Mark Category as unread
-            mark_category_as(conn, categories[current_category], stdscr, 0)
+            mark_category_as(conn, categories[current_category][0], stdscr, 0)
         elif key == ord("R"):  # Mark All Categories as read
             for cat in categories:
-                mark_category_as(conn, cat, stdscr, 1)
+                mark_category_as(conn, cat[0], stdscr, 1)
         elif key == ord("U"):  # Mark All Categories as unread
             for cat in categories:
-                mark_category_as(conn, cat, stdscr, 0)
+                mark_category_as(conn, cat[0], stdscr, 0)
         elif key == ord("h"):  # Help key
             display_help_categories(stdscr)
         elif key == ord("!"):
