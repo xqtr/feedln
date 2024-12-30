@@ -15,7 +15,7 @@ import re
 import logging
 
 program = "Feedln"
-version = "1.0.1"
+version = "1.0.3"
 database = "feedln.sq3"
 feedfile = "feedln.csv"
 cfgfile = "feedln.cfg"
@@ -135,12 +135,32 @@ def confirm(stdscr,text):
         stdscr.addstr(curses.LINES-1, len(text), confirmation+" ", curses.color_pair(2)|curses.A_BOLD)  # Display current input
         stdscr.move(curses.LINES-1, len(text)+len(confirmation))
         stdscr.refresh()
-
+    
+    curses.curs_set(0)
     if confirmation.lower() == 'yes':
         return True
     else:
         return False
-
+        
+def clean_database(stdscr):
+    global database,feedfile
+    if confirm(stdscr,"Clean old feed items? Write 'yes' to confirm:"):
+        try:
+            conn = sqlite3.connect(database)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM feeds")
+            feeds = cursor.fetchall()
+            for feed in feeds:
+                cursor.execute(f"DELETE FROM feed_items WHERE feed_id = {feed[0]} ORDER BY last_updated DESC LIMIT 10")
+            conn.commit()
+        except Exception as e:
+                footer(stdscr,f"Error: {e}",1)
+                stdscr.refresh()
+                time.sleep(2)
+        
+    else:
+        footerpop(stdscr,"Reset canceled.")
+ 
 def delete_database_file(stdscr):
     global database,feedfile
     if confirm(stdscr,"Reset database? Write 'yes' to confirm:"):
@@ -214,14 +234,69 @@ def load_feeds_to_db(csv_file, conn):
     conn.commit()
 
 # Fetch categories from database
-def fetch_categories(conn):
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT name, id FROM categories")  # Fetch distinct category names
+def fetch_categories(conn, orderby=1):
+    if orderby == 1:
+        # Order by name
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT name, id 
+            FROM categories 
+            ORDER BY name ASC
+        """)
+    elif orderby == 2:
+        # Order by id
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT name, id 
+            FROM categories 
+            ORDER BY id ASC
+        """)
+    elif orderby == 3:
+        # Order by unread count
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT c.name, c.id, COUNT(CASE WHEN fi.is_read = 0 THEN 1 END) as unread_count
+            FROM categories c
+            LEFT JOIN feed_categories fc ON c.id = fc.category_id
+            LEFT JOIN feeds f ON fc.feed_id = f.id
+            LEFT JOIN feed_items fi ON f.id = fi.feed_id
+            GROUP BY c.name, c.id
+            ORDER BY unread_count DESC, c.name ASC
+        """)
+    
     categories = cursor.fetchall()
-    return [(category[0],category[1]) for category in categories]  # Return a list of category names
+    # If using unread count query, strip the count from result
+    #if orderby == 3:
+    #    return [(category[0], category[1]) for category in categories]
+    return [(category[0], category[1]) for category in categories]
 
 # Fetch feeds by category
 def fetch_feeds_by_category(conn, category, orderby='c.name'):
+    forder = "c.name"
+    if orderby == 1:
+        forder = "f.name"
+    elif orderby == 2:
+        forder = "f.id"
+    elif orderby == 3:
+        forder = "f.url"
+    elif orderby == 4:
+        # Order by unread count
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT f.id, f.name AS feed_name, f.url, f.tags,
+                   COUNT(CASE WHEN fi.is_read = 0 THEN 1 END) as unread_count
+            FROM feeds f
+            JOIN feed_categories fc ON f.id = fc.feed_id
+            JOIN categories c ON fc.category_id = c.id
+            LEFT JOIN feed_items fi ON f.id = fi.feed_id
+            WHERE c.name = ?
+            GROUP BY f.id, f.name, f.url, f.tags
+            ORDER BY unread_count DESC
+        """, (category,))
+        feeds = cursor.fetchall()
+        return feeds  # Return the list of feeds with unread counts
+
+    # Original query for other sort orders
     cursor = conn.cursor()
     cursor.execute(f"""
         SELECT f.id, f.name AS feed_name, f.url, f.tags 
@@ -229,7 +304,7 @@ def fetch_feeds_by_category(conn, category, orderby='c.name'):
         JOIN feed_categories fc ON f.id = fc.feed_id
         JOIN categories c ON fc.category_id = c.id
         WHERE c.name = ? 
-        ORDER BY {orderby} ASC
+        ORDER BY {forder} ASC
     """, (category,))
     feeds = cursor.fetchall()
     return feeds  # Return the list of feeds
@@ -373,6 +448,7 @@ def display_help_categories(stdscr):
         "F: Fetch All Categories\n"
         "r: Mark Category as read\n"
         "u: Mark Category as unread\n"
+        "o: Change Sort Order (Name, ID, Unread count)\n"
         "R: Mark All Categories as read\n"
         "U: Mark All Categories as unread\n"
         "e: Edit feeds with text editor\n"
@@ -443,7 +519,7 @@ def display_help_feeds(stdscr):
         "f: Update Feed\n"
         "r: Mark Feed as read\n"
         "u: Mark Feed as unread\n"
-        "o: Change Sort Order\n"
+        "o: Change Sort Order (Name, ID, Unread count...)\n"
         "PgDn: Scroll Down\n"
         "PgUp: Scroll Up\n"
         "h: Help\n"
@@ -453,11 +529,21 @@ def display_help_feeds(stdscr):
     stdscr.refresh()
     stdscr.getch()  # Wait for user input before returning
 
+
+def cat_order_to_string(i):
+    if i == 1:
+        return "Name"
+    elif i == 2:
+        return "ID"
+    elif i == 3:
+        return "Unread Count"
+
 # Function to display categories
 def display_categories(stdscr, conn):
     global feedfile, editor, xterm, logfile
     curses.curs_set(0)  # Disable cursor
-    categories = fetch_categories(conn)
+    orderi = 3
+    categories = fetch_categories(conn,orderi)
 
     current_category = 0
     start_index = 0  # Track the starting index for display
@@ -465,7 +551,7 @@ def display_categories(stdscr, conn):
     while True:
         max_display = curses.LINES - 2  # Maximum number of categories to display
         stdscr.clear()
-        header(stdscr, f"[] {program} v{version}")
+        header(stdscr, f"[] {program} v{version} [Sort by: {cat_order_to_string(orderi)}]")
 
         # Display categories within the current view
         for i in range(start_index, min(start_index + max_display, len(categories))):
@@ -499,10 +585,14 @@ def display_categories(stdscr, conn):
             if start_index > 0:
                 start_index = max(0, start_index - max_display)
                 current_category = max(0, current_category - max_display)
+            else:
+                current_category = 0
         elif key == curses.KEY_NPAGE:  # Page Down
             if start_index + max_display < len(categories):
                 start_index += max_display
                 current_category = min(len(categories) - 1, current_category + max_display)
+            else:
+                current_category = len(categories) - 1  # Scroll to the end    
         elif key == curses.KEY_HOME:  # Home key
             current_category = 0  # Scroll to the start
             start_index = 0  # Reset start index
@@ -532,12 +622,18 @@ def display_categories(stdscr, conn):
             display_help_categories(stdscr)
         elif key == ord("!"):
             delete_database_file(stdscr)
+        elif key == ord("%"):
+            clean_database(stdscr)
         elif key == ord("#"):
             clear_feeds_not_in_csv(stdscr,conn,feedfile)
         elif key == ord("e"):
             os.system(f"xterm {xterm} -e {editor} {feedfile}")
         elif key == ord("l"):
             os.system(f"xterm {xterm} -e {editor} {logfile}")
+        elif key == ord("o"):
+            orderi += 1
+            if orderi > 3: orderi = 1
+            categories = fetch_categories(conn,orderi)
 
 def header(stdscr,text):
     height, width = stdscr.getmaxyx()
@@ -570,18 +666,27 @@ def format_file_size(size_in_bytes):
     else:
         return f"{size_in_bytes / (1024 ** 3):.2f} GB"
 
+def feed_order_to_string(i):
+    if i == 1:
+        return "By Name"
+    elif i == 2:
+        return "By ID"
+    elif i == 3:
+        return "By URL"
+    elif i == 4:
+        return "By Unread Count"
 
 # Function to display feeds within a category
 def display_feeds(stdscr, conn, category):
-    orderi = 1
-    feeds = fetch_feeds_by_category(conn, category)
+    orderi = 4
+    feeds = fetch_feeds_by_category(conn, category,orderi)
     current_feed = 0
     start_index = 0  # Track the starting index for display
     max_display = curses.LINES - 2  # Maximum number of items to display
 
     while True:
         stdscr.clear()
-        header(stdscr, f": {category}")
+        header(stdscr, f": {category} [Sort: {feed_order_to_string(orderi)}]")
 
         # Display the feeds with pagination
         for i in range(start_index, min(start_index + max_display, len(feeds))):
@@ -622,10 +727,14 @@ def display_feeds(stdscr, conn, category):
             if start_index > 0:
                 start_index = max(0, start_index - max_display)
                 current_feed = max(0, current_feed - max_display)
+            else:
+                current_feed = 0
         elif key == curses.KEY_NPAGE:  # Page Down
             if start_index + max_display < len(feeds):
                 start_index += max_display
                 current_feed = min(len(feeds) - 1, current_feed + max_display)
+            else:
+                current_feed = len(feeds) - 1  # Scroll to the end
         elif key == ord("\n") or key == curses.KEY_RIGHT:  # Enter key
             #print(feeds[current_feed])
             #stdscr.getch()
@@ -639,7 +748,7 @@ def display_feeds(stdscr, conn, category):
             exit(0)
         elif key == ord("o"):
             orderi += 1
-            if orderi > 3: orderi = 1
+            if orderi > 4: orderi = 1
             feeds = fetch_feeds_by_category(conn, category, orderi)
             current_feed = 0
         elif key == ord("h"):
@@ -698,9 +807,13 @@ def display_feed_items(stdscr, conn, feed,category=""):
             if start_index > 0:
                 start_index = max(0, start_index - max_display)
                 current_item = max(0, current_item - max_display)
+            else:
+                current_item = 0
         elif key == curses.KEY_NPAGE:  # Page Down
             if start_index + max_display < len(feed_items):
                 start_index += max_display
+                current_item = min(len(feed_items) - 1, current_item + max_display)
+            else:
                 current_item = min(len(feed_items) - 1, current_item + max_display)
         elif key == ord("\n") or key == curses.KEY_RIGHT:  # Enter key
             if len(feed_items) > 0:

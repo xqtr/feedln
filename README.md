@@ -38,7 +38,7 @@ You can install the required libraries using pip:
 
 ## Configuration
 
-The application uses a configuration file (`Feedln.cfg`) to store user preferences. The following settings can be configured:
+The application uses a configuration file (`feedln.cfg`) to store user preferences. The following settings can be configured:
 
 - `media`: Media player to use for playing media links (default: `mpv`).
 - `browser`: Web browser to use for opening links (default: `firefox`).
