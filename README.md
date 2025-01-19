@@ -24,6 +24,7 @@ Feedln is a command-line RSS feed reader that allows users to manage and read th
 - Can extract text from feed entry to file
 - Sort feeds, by Name/Title, Date
 - Navigate through menus, with only left/right cursor keys, unified in all menus/screens
+- Browse items from a category
 
 ## Requirements
 
@@ -38,7 +39,7 @@ You can install the required libraries using pip:
 
 ## Configuration
 
-The application uses a configuration file (`feedln.cfg`) to store user preferences. The following settings can be configured:
+The application uses a configuration file (`Feedln.cfg`) to store user preferences. The following settings can be configured:
 
 - `media`: Media player to use for playing media links (default: `mpv`).
 - `browser`: Web browser to use for opening links (default: `firefox`).
@@ -55,6 +56,10 @@ Execute the application using the following command, no parameters needed.
    ```
 
 Each screen/menu has its own help screen, press 'h' to see key shortcuts for each one.
+
+## Features
+
+Read the CHANGELOG.md file
 
 ## License
 

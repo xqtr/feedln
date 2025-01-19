@@ -231,6 +231,7 @@ def load_feeds_to_db(csv_file, conn):
                             )
                 except sqlite3.IntegrityError as e:
                     print(f"Skipping duplicate feed: {row['URL']} - {e}")
+                    pass
     conn.commit()
 
 # Fetch categories from database
@@ -357,7 +358,7 @@ def update_feed_items(stdscr,conn, feed):
     conn.commit()
     
 def get_feed_item_counts_by_category(conn, category):
-    print(category)
+    #print(category)
     cursor = conn.cursor()
     cursor.execute("""
         SELECT COUNT(fi.id) AS total_items, 
@@ -413,8 +414,8 @@ def clear_feeds_not_in_csv(stdscr,conn, csv_file):
 
 def update_feeds_by_category(conn, category,stdscr):
     feeds = fetch_feeds_by_category(conn, category)
-    for feed in feeds:
-        text = f"Updating: {feed[2]}"
+    for i,feed in enumerate(feeds):
+        text = f"{i+1:3}/{len(feeds):3}| {category:12}|{feed[2]:25}"
         footer(stdscr,text)
         stdscr.refresh()
         update_feed_items(stdscr,conn, feed)
@@ -444,17 +445,18 @@ def display_help_categories(stdscr):
         "Enter/Left: Select category\n"
         "ESC: Back\n"
         "q: Quit\n"
-        "f: Fetch one category\n"
+        "f: Fetch One Category\n"
         "F: Fetch All Categories\n"
-        "r: Mark Category as read\n"
-        "u: Mark Category as unread\n"
+        "r: Mark Category as Read\n"
+        "u: Mark Category as Unread\n"
         "o: Change Sort Order (Name, ID, Unread count)\n"
         "R: Mark All Categories as read\n"
         "U: Mark All Categories as unread\n"
-        "e: Edit feeds with text editor\n"
-        "l: Watch log file, if exists, with external editor"
-        "!: Delete database file. Reopen the program!\n"
-        "#: Clear database from feeds, that don't exist in feeds file\n"
+        "e: Edit Feeds with text editor\n"
+        "l: Watch log file, if Exists, with External Editor\n"
+        "!: Delete Database file. Reopen the Program!\n"
+        "#: Clear Database from Feeds, that don't Exist in Feeds File\n"
+        "TAB: Browse Category\n"
         "h: Help\n"
     )
     stdscr.addstr(1, 0, help_text)
@@ -562,7 +564,7 @@ def display_categories(stdscr, conn):
             
             all_items = total[0] if total and total[0] is not None else 0  # Default to 0 if None
             unread = total[1] if total and total[1] is not None else 0  # Default to 0 if None
-            line = f"> {unread:3} | {all_items:3} | {categories[i][0]}" if i == current_category else f"  {unread:3} | {all_items:3} | {categories[i][0]}"
+            line = f"> {unread:5} | {all_items:5} | {categories[i][0]}" if i == current_category else f"  {unread:5} | {all_items:5} | {categories[i][0]}"
             if unread > 0:
                 stdscr.addstr(i - start_index + 1, 0, line, curses.color_pair(1) | curses.A_BOLD)
             else:
@@ -601,12 +603,14 @@ def display_categories(stdscr, conn):
             start_index = max(0, len(categories) - max_display)
         elif key == ord("\n") or key == curses.KEY_RIGHT:  # Enter key
             display_feeds(stdscr, conn, categories[current_category][0])
+        elif key == 9:  # TAB Key
+            display_category_feed_items(stdscr, conn, categories[current_category][0])
         elif key == ord("f"):  # Fetch one category
             update_feeds_by_category(conn, categories[current_category][0], stdscr)
         elif key == ord("F"):  # Update All Categories
             for cat in categories:
                 update_feeds_by_category(conn, cat[0], stdscr)
-        elif key == ord("q") or key == curses.KEY_LEFT:
+        elif key == ord("q") or key == curses.KEY_LEFT or key == 27:
             break
         elif key == ord("r"):  # Mark Category as read
             mark_category_as(conn, categories[current_category][0], stdscr, 1)
@@ -636,14 +640,15 @@ def display_categories(stdscr, conn):
             categories = fetch_categories(conn,orderi)
 
 def header(stdscr,text):
-    height, width = stdscr.getmaxyx()
-    stdscr.addstr(0,0," "*(width-1), curses.color_pair(2) | curses.A_BOLD)
-    stdscr.addstr(0, 0, text[:width-1], curses.color_pair(2) | curses.A_BOLD)
-
-def footer(stdscr,text,error=0):
     global database
     height, width = stdscr.getmaxyx()
     db_size = f"DB:{format_file_size(os.path.getsize(database))}"
+    stdscr.addstr(0,0," "*(width-1), curses.color_pair(2) | curses.A_BOLD)
+    stdscr.addstr(0, 0, text[:width-1], curses.color_pair(2) | curses.A_BOLD)
+    stdscr.addstr(0,width-len(db_size)-1,db_size, curses.color_pair(2) | curses.A_BOLD)
+
+def footer(stdscr,text,error=0):
+    height, width = stdscr.getmaxyx()
     color = 0
     if error == 0:
         color = curses.color_pair(2) | curses.A_BOLD
@@ -653,7 +658,7 @@ def footer(stdscr,text,error=0):
         color = curses.color_pair(3) | curses.A_BOLD
     stdscr.addstr(height-1,0," "*(width-1), color)
     stdscr.addstr(height-1,0,text[:width-1], color)
-    stdscr.addstr(height-1,width-len(db_size)-1,db_size, color)
+    
   
 # Function to format file size from bytes to a human-readable format
 def format_file_size(size_in_bytes):
@@ -694,7 +699,7 @@ def display_feeds(stdscr, conn, category):
             total_items = total_items if total_items is not None else 0
             total_unread = total_unread if total_unread is not None else 0
             
-            text = f" {total_unread:3} | {total_items:3} | {feeds[i][1]}"
+            text = f" {total_unread:5} | {total_items:5} | {feeds[i][1]}"
             if i == current_feed:
                 text = ">" + text
             else:
@@ -744,7 +749,7 @@ def display_feeds(stdscr, conn, category):
             update_feed_items(stdscr,conn, feeds[current_feed])
         elif key == 27 or key == curses.KEY_LEFT:  # ESC key
             break
-        elif key == ord("q"):
+        elif key == ord("q") or key == 27:
             exit(0)
         elif key == ord("o"):
             orderi += 1
@@ -843,7 +848,97 @@ def display_feed_items(stdscr, conn, feed,category=""):
             current_item = len(feed_items) - 1  # Scroll to the end
             start_index = max(0, len(feed_items) - max_display)  # Adjust start index if needed
 
+
+def get_feed_items_bycategory(conn,category):
+    cursor = conn.cursor()
+    sql = """SELECT fi.id, fi.title, fi.summary, fi.is_read, fi.last_updated, fi.created, fi.link,
+f.name as feed_name
+FROM feed_items fi
+JOIN feeds f ON fi.feed_id = f.id
+JOIN feed_categories fc ON f.id = fc.feed_id
+JOIN categories c ON fc.category_id = c.id
+WHERE c.name = ?
+ORDER BY fi.last_updated DESC"""
+    cursor.execute( sql , (category,))
+    return cursor.fetchall()
+
+# Display Feed items by category
+def display_category_feed_items(stdscr, conn, category=""):
+    feed_items = get_feed_items_bycategory(conn,category)
+    current_item = 0
+    start_index = 0  # Track the starting index for display
+    
+    while True:
+        stdscr.clear()
+        unread_count = sum(1 for item in feed_items if not item[3])  # Count unread items
+        header(stdscr, f": {category} [Unread : {unread_count}]")
+        #header(stdscr, f": {category} : {feed[1]} [Unread : {unread_count}]")
+        max_display = curses.LINES - 2  # Maximum number of items to display
+        max_length = maxlength(stdscr) - 1  # Leave space for cursor
+       
+        # Display the feed items with proper length handling
+        if feed_items:
+            for i in range(start_index, min(start_index + max_display, len(feed_items))):
+                title = feed_items[i][1][:max_length - 20]  # Reserve space for status
+                feedname = feed_items[i][7][:15]
+                last_updated = time.strftime('%Y-%m-%d', time.localtime(feed_items[i][4]))  # Format last updated timestamp
+                display_str = f"> {last_updated} | {feedname:15} | {title}" if i == current_item else f"  {last_updated} | {feedname:15} | {title}"
+                try:
+                    if feed_items[i][3]==1:
+                        stdscr.addstr(i - start_index + 1, 0, display_str[:max_length-2],curses.color_pair(1))  
+                    else:
+                        stdscr.addstr(i - start_index + 1, 0, display_str[:max_length-2],curses.color_pair(1)|curses.A_BOLD)  
+                except:
+                    stdscr.addstr(i - start_index + 1, 0, f"Error {feed_items[i][2]}")  
         
+        footer(stdscr, "q:quit | Enter:Select | ESC:Back | h:help")
+        stdscr.refresh()
+
+        key = stdscr.getch()
+
+        if key == curses.KEY_UP and current_item > 0:
+            current_item -= 1
+            if current_item < start_index:  # Adjust start_index if needed
+                start_index = max(0, start_index - 1)
+        elif key == curses.KEY_DOWN and current_item < len(feed_items) - 1:
+            current_item += 1
+            if current_item >= start_index + max_display:  # Adjust start_index if needed
+                start_index += 1
+        elif key == curses.KEY_PPAGE:  # Page Up
+            if start_index > 0:
+                start_index = max(0, start_index - max_display)
+                current_item = max(0, current_item - max_display)
+            else:
+                current_item = 0
+        elif key == curses.KEY_NPAGE:  # Page Down
+            if start_index + max_display < len(feed_items):
+                start_index += max_display
+                current_item = min(len(feed_items) - 1, current_item + max_display)
+            else:
+                current_item = min(len(feed_items) - 1, current_item + max_display)
+        elif key == ord("\n") or key == curses.KEY_RIGHT:  # Enter key
+            if len(feed_items) > 0:
+                mark_item_as_read(conn, feed_items[current_item][0])
+                display_feed_entry(stdscr, conn, feed_items[current_item])
+                feed_items = get_feed_items_bycategory(conn,category)
+        elif key == 27 or key == curses.KEY_LEFT:  # ESC key
+            break
+        elif key == ord("q"):
+            exit(0)
+        elif key == ord("r"):  # Mark Category as read
+            mark_item_as_read(conn, feed_items[current_item][0])
+            feed_items = get_feed_items_bycategory(conn,category)
+        elif key == ord("u"):  # Mark Category as unread
+            mark_item_as_read(conn, feed_items[current_item][0],0)
+            feed_items = get_feed_items_bycategory(conn,category)
+        elif key == ord("h"):
+            display_help_feed_items(stdscr)
+        elif key == curses.KEY_HOME:  # Home key
+            current_item = 0  # Scroll to the start
+            start_index = 0  # Reset start index
+        elif key == curses.KEY_END:  # End key
+            current_item = len(feed_items) - 1  # Scroll to the end
+            start_index = max(0, len(feed_items) - max_display)  # Adjust start index if needed        
 
 # Function to mark an item as read
 def mark_item_as_read(conn, item_id,read=1):
@@ -1095,7 +1190,7 @@ def export_feed_entry_to_file(conn, feed_item, filename):
         file.write(export_content)
 
 
-def initialize_colors(stdscr, conn):
+def initialize_screen(stdscr, conn):
     curses.start_color()
     curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)  # Color pair 1: White text on black background
     curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLUE)    # Color pair 2: Yellow text on blue background
@@ -1111,7 +1206,7 @@ def main():
     conn = setup_database()
     csv_file = feedfile  # Path to your CSV file
     load_feeds_to_db(csv_file, conn)
-    curses.wrapper(lambda stdscr: initialize_colors(stdscr, conn))
+    curses.wrapper(lambda stdscr: initialize_screen(stdscr, conn))
 
 if __name__ == "__main__":
     main()
