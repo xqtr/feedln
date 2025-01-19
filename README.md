@@ -57,7 +57,7 @@ Execute the application using the following command, no parameters needed.
 
 Each screen/menu has its own help screen, press 'h' to see key shortcuts for each one.
 
-## Features
+## Changes
 
 Read the CHANGELOG.md file
 
