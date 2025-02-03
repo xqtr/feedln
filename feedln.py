@@ -15,17 +15,17 @@ import re
 import logging
 
 program = "Feedln"
-version = "1.0.3"
+version = "1.0.4"
 database = "feedln.sq3"
 feedfile = "feedln.csv"
 cfgfile = "feedln.cfg"
 logfile = "feedln.log"
 reqtimeout = 8
 
-browser = "firefox"
-media = "mpv"
+browser = os.environ["BROWSER"] #get settings from environment
+media = os.environ["PLAYER"] #"mpv"
 xterm = "-fa 'Monospace' -fs 14"
-editor = "nano"
+editor = os.environ["EDITOR"]
 
 logging.basicConfig(
     filename=logfile,  # Log file name
@@ -39,7 +39,7 @@ def log_event(message):
 
 
 def load_config():
-    global media, xterm, editor,reqtimeout
+    global media, xterm, editor,reqtimeout, media, browser, xterm, editor, reqtimeout
     config_file = cfgfile  # Assuming cfgfile is the path to your config file
     if os.path.exists(config_file):
         config = configparser.ConfigParser()
@@ -50,6 +50,10 @@ def load_config():
             xterm = config['Settings'].get('xterm', xterm)
             editor = config['Settings'].get('editor', editor)
             reqtimeout = int(config['Settings'].get('reqtimeout', reqtimeout))
+    else:
+        if not editor: editor = "nano"
+        if not browser: browser = "firefox"
+        if not media: media = "mpv"
 
 
 def check_feed_file():

@@ -16,3 +16,6 @@
 - Moved Database size to header
 - Added more information when updating feeds on the footer
 - Minor errors, fixed
+
+### Version 1.0.4 (2025/02/03)
+- Default values for Browser, Editor, Media Player are taken from OS environment variables (BROWSER, EDITOR, PLAYER). If a settings file exists, the values are replaced from the one in the settings file. Otherwise, if no environment variables are set and no settings file exist, the program sets default values, firefox, mpv and nano.
