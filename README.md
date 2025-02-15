@@ -25,6 +25,10 @@ Feedln is a command-line RSS feed reader that allows users to manage and read th
 - Sort feeds, by Name/Title, Date
 - Navigate through menus, with only left/right cursor keys, unified in all menus/screens
 - Browse items from a category
+- Use multiple files with feeds
+- Import OPML files
+- Export to OPML files
+- Search text in Categories
 
 ## Requirements
 
@@ -33,9 +37,11 @@ Feedln is a command-line RSS feed reader that allows users to manage and read th
   - `feedparser`
   - `bs4` (BeautifulSoup)
   - `pyperclip`
+  - `requests`
+  - `lxml`
 
 You can install the required libraries using pip:
-`pip install beautifulsoup4 feedparser pyperclip`
+`pip install beautifulsoup4 feedparser pyperclip lxml requests`
 
 ## Configuration
 

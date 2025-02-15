@@ -13,9 +13,12 @@ import configparser
 from textwrap import wrap
 import re
 import logging
+import threading
+from datetime import datetime
+import argparse
 
 program = "Feedln"
-version = "1.0.4"
+version = "1.0.5"
 database = "feedln.sq3"
 feedfile = "feedln.csv"
 cfgfile = "feedln.cfg"
@@ -27,16 +30,45 @@ media = os.environ["PLAYER"] #"mpv"
 xterm = "-fa 'Monospace' -fs 14"
 editor = os.environ["EDITOR"]
 
+SPEAK = "espeak"
+
+class InterruptibleTTS:
+    def __init__(self):
+        self.speaking = False
+        self.enabled = False
+
+    def speak(self, text):
+        def run():
+            self.speaking = True
+            os.system(SPEAK+' "'+text+'" >/dev/null 2>&1')
+            self.speaking = False
+        if not self.enabled: return
+        self.thread = threading.Thread(target=run)
+        self.thread.start()
+    
+    def stop(self):
+        if not self.enabled: return
+        if self.speaking:
+            os.system("killall espeak >/dev/null 2>&1")
+            self.speaking = False
+
 logging.basicConfig(
     filename=logfile,  # Log file name
     level=logging.INFO,      # Log level
     format='%(asctime)s - %(levelname)s - %(message)s'  # Log message format
 )
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description=f'{program} v{version} - RSS Feed Reader')
+    parser.add_argument('-f', '--file', 
+                        help='Path to CSV file containing feeds (default: feedln.csv)',
+                        default=feedfile)
+    return parser.parse_args()
+
 def log_event(message):
     """Log an event with the specified message."""
     logging.info(message)  # Log the message as an info level event
-
 
 def load_config():
     global media, xterm, editor,reqtimeout, media, browser, xterm, editor, reqtimeout
@@ -189,6 +221,77 @@ def delete_database_file(stdscr):
     else:
         footerpop(stdscr,"Reset canceled.")
     curses.curs_set(0)
+
+#Export all feeds to OPML file
+def export_opml(stdscr, conn, filename="feedln.opml"):
+    """
+    Export feeds from database to OPML format
+    Parameters:
+        stdscr: Curses window object
+        conn: Database connection
+        filename: Output OPML filename (default: feedln.opml)
+    """
+    try:
+        cursor = conn.cursor()
+        # Get all feeds with their categories
+        cursor.execute("""
+            SELECT f.name, f.url, GROUP_CONCAT(c.name) as categories, f.tags
+            FROM feeds f
+            LEFT JOIN feed_categories fc ON f.id = fc.feed_id
+            LEFT JOIN categories c ON fc.category_id = c.id
+            GROUP BY f.id
+        """)
+        feeds = cursor.fetchall()
+
+        # Create OPML structure
+        opml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+        opml += '<opml version="2.0">\n'
+        opml += '  <head>\n'
+        opml += f'    <title>Feedln Export</title>\n'
+        opml += f'    <dateCreated>{time.strftime("%a, %d %b %Y %H:%M:%S %z")}</dateCreated>\n'
+        opml += '  </head>\n'
+        opml += '  <body>\n'
+
+        # Track unique categories
+        categories = {}
+        
+        # First pass: organize feeds by category
+        for feed in feeds:
+            feed_categories = feed[2].split(',') if feed[2] else ['Uncategorized']
+            for category in feed_categories:
+                category = category.strip()
+                if category not in categories:
+                    categories[category] = []
+                categories[category].append(feed)
+
+        # Second pass: write feeds organized by category
+        for category in sorted(categories.keys()):
+            opml += f'    <outline text="{category}" title="{category}">\n'
+            for feed in categories[category]:
+                title = feed[0].replace('"', '&quot;')
+                url = feed[1].replace('"', '&quot;')
+                tags = feed[3] if feed[3] else ''
+                opml += f'      <outline type="rss" text="{title}" title="{title}" xmlUrl="{url}"'
+                if tags:
+                    opml += f' category="{tags}"'
+                opml += '/>\n'
+            opml += '    </outline>\n'
+
+        opml += '  </body>\n'
+        opml += '</opml>'
+
+        # Write to file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"feedln-{timestamp}.opml"
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(opml)
+
+        footerpop(stdscr, f"Feeds exported to {filename}")
+        log_event(f"Feeds exported to OPML file: {filename}")
+
+    except Exception as e:
+        footerpop(stdscr, f"Error exporting OPML: {str(e)}", 1)
+        log_event(f"Error exporting OPML: {str(e)}")
 
 # Load feeds from CSV into database
 def load_feeds_to_db(csv_file, conn):
@@ -439,29 +542,95 @@ def mark_category_as(conn,category,stdscr,mark):
         stdscr.refresh()
         mark_all_items_as(conn, feed[0],mark)
 
+# Add a new feed to the CSV file
+def add_new_feed(stdscr, conn):
+    global feedfile
+    """Add a new feed to the database and CSV file."""
+    height, width = stdscr.getmaxyx()
+    curses.echo()  # Enable echo for input
+    curses.curs_set(1)  # Show cursor
+
+    # Get feed name
+    footer(stdscr, "Enter feed name: ", 3)
+    stdscr.refresh()
+    stdscr.attron(curses.color_pair(4) | curses.A_BOLD)
+    name = stdscr.getstr(height-1, 17).decode('utf-8')
+
+    if not name:
+        curses.noecho()
+        curses.curs_set(0)
+        stdscr.attroff(curses.color_pair(4) | curses.A_BOLD)
+        footerpop(stdscr, f"Abort!", color=1)
+        return False
+
+    # Get feed URL
+    footer(stdscr, "Enter feed URL: ", 3)
+    stdscr.refresh()
+    url = stdscr.getstr(height-1, 17).decode('utf-8')
+    if not url:
+        curses.noecho()
+        curses.curs_set(0)
+        stdscr.attroff(curses.color_pair(4) | curses.A_BOLD)
+        footerpop(stdscr, f"Abort!", color=1)
+        return False
+
+    # Get feed category
+    footer(stdscr, "Enter feed category: ", 3)
+    stdscr.refresh()
+    category = stdscr.getstr(height-1, 21).decode('utf-8')
+    if not category:
+        curses.noecho()
+        curses.curs_set(0)
+        stdscr.attroff(curses.color_pair(4) | curses.A_BOLD)
+        footerpop(stdscr, f"Abort!", color=1)
+        return False
+    
+    stdscr.attroff(curses.color_pair(4) | curses.A_BOLD)
+
+    try:
+        # Add to CSV file
+        with open(feedfile, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([name, url, category, ""])
+        footerpop(stdscr, "Feed added successfully!")
+        log_event(f"New feed added: {name} ({url})")
+
+        load_feeds_to_db(feedfile, conn)
+
+    except Exception as e:
+        footerpop(stdscr, f"Error adding feed: {str(e)}", 1)
+        log_event(f"Error adding feed: {str(e)}")
+        False
+
+    curses.noecho()
+    curses.curs_set(0)
+    return True
+
 # Function to display help information
 def display_help_categories(stdscr):
     stdscr.clear()
     header(stdscr,"Key Shortcuts")
     help_text = (
-        "\n"
-        "Up / Down: Navigate categories\n"
-        "Enter/Left: Select category\n"
-        "ESC: Back\n"
+        "Enter/Right: Select category\n"
+        "ESC/Left: Back\n"
         "q: Quit\n"
+        "a: Add new Feed\n"
         "f: Fetch One Category\n"
         "F: Fetch All Categories\n"
         "r: Mark Category as Read\n"
         "u: Mark Category as Unread\n"
         "o: Change Sort Order (Name, ID, Unread count)\n"
+        "O: Export feeds to OPML file\n"
         "R: Mark All Categories as read\n"
         "U: Mark All Categories as unread\n"
         "e: Edit Feeds with text editor\n"
+        "s: Speak Text Menu\n"
+        "x: Stop Speaking\n"
+        "/: Search Categorie for Text\n"
         "l: Watch log file, if Exists, with External Editor\n"
         "!: Delete Database file. Reopen the Program!\n"
         "#: Clear Database from Feeds, that don't Exist in Feeds File\n"
         "TAB: Browse Category\n"
-        "h: Help\n"
     )
     stdscr.addstr(1, 0, help_text)
     footer(stdscr,"Press a key to go back...")
@@ -481,6 +650,8 @@ def display_help_feed_items(stdscr):
         "u: Mark Feed as unread\n"
         "t: Sort by Title\n"
         "d: Sort by Date\n"
+        "s: Speak Text Menu\n"
+        "x: Stop Speaking\n"
         "PgDn: Scroll Down\n"
         "PgUp: Scroll Up\n"
         "h: Help\n"
@@ -506,6 +677,8 @@ def display_help_entry(stdscr):
         "2: Copy Link to clipboard\n"
         "3: Copy Summary to clipboard\n"
         "4: Copy Content to clipboard\n"
+        "s: Speak Text Menu\n"
+        "x: Stop Speaking\n"
         "h: Help\n"
     )
     stdscr.addstr(1, 0, help_text)
@@ -526,6 +699,8 @@ def display_help_feeds(stdscr):
         "r: Mark Feed as read\n"
         "u: Mark Feed as unread\n"
         "o: Change Sort Order (Name, ID, Unread count...)\n"
+        "s: Speak Text Menu\n"
+        "x: Stop Speaking\n"
         "PgDn: Scroll Down\n"
         "PgUp: Scroll Up\n"
         "h: Help\n"
@@ -543,6 +718,38 @@ def cat_order_to_string(i):
         return "ID"
     elif i == 3:
         return "Unread Count"
+
+# Search a category and display feed items
+def search_category(stdscr, conn, category):
+    footer(stdscr, "Search in: [A]ll [T]itle [C]ontent [S]ummary [Q]uit", 3)
+    stdscr.refresh()
+    where_key = stdscr.getch()
+    
+    if where_key == ord("a"):
+        search_where = 'all'
+    elif where_key == ord("t"):
+        search_where = 'title'
+    elif where_key == ord("c"):
+        search_where = 'content'
+    elif where_key == ord("s"):
+        search_where = 'summary'
+    elif where_key == ord("q"):  # ESC
+        return
+    else:
+        return
+        
+    # Get search text
+    curses.echo()
+    footer(stdscr, "Enter search text: ", 3)
+    stdscr.refresh()
+    stdscr.attron(curses.color_pair(4) | curses.A_BOLD)
+    search_text = stdscr.getstr(curses.LINES-1, 19).decode('utf-8')
+    stdscr.attroff(curses.color_pair(4) | curses.A_BOLD)
+    curses.noecho()
+    
+    if search_text:
+        feed_items = get_feed_items_bycategory(conn, category, search_text, search_where)
+        display_category_feed_items(stdscr, conn, category,search_text,search_where)
 
 # Function to display categories
 def display_categories(stdscr, conn):
@@ -609,6 +816,8 @@ def display_categories(stdscr, conn):
             display_feeds(stdscr, conn, categories[current_category][0])
         elif key == 9:  # TAB Key
             display_category_feed_items(stdscr, conn, categories[current_category][0])
+        elif key == ord("/"):
+            search_category(stdscr, conn, categories[current_category][0])
         elif key == ord("f"):  # Fetch one category
             update_feeds_by_category(conn, categories[current_category][0], stdscr)
         elif key == ord("F"):  # Update All Categories
@@ -616,6 +825,11 @@ def display_categories(stdscr, conn):
                 update_feeds_by_category(conn, cat[0], stdscr)
         elif key == ord("q") or key == curses.KEY_LEFT or key == 27:
             break
+        elif key == ord("a"):
+            if add_new_feed(stdscr, conn):
+                categories = fetch_categories(conn,orderi)
+                current_category = 0
+                start_index = 0
         elif key == ord("r"):  # Mark Category as read
             mark_category_as(conn, categories[current_category][0], stdscr, 1)
         elif key == ord("u"):  # Mark Category as unread
@@ -642,6 +856,18 @@ def display_categories(stdscr, conn):
             orderi += 1
             if orderi > 3: orderi = 1
             categories = fetch_categories(conn,orderi)
+        elif key == ord("x"):
+            tts.stop()
+        elif key == ord("s"): 
+            height, width = stdscr.getmaxyx()
+            stdscr.addstr(height-1, 0, str("Speak: [T]itle [C]ancel").ljust(width-1), curses.color_pair(4) | curses.A_BOLD)
+            key = stdscr.getch()
+            if key == ord("t"):
+                tts.speak(categories[current_category][0])
+            elif key == ord("c"):
+                pass
+        elif key == ord("O"):  # Capital O for OPML export
+            export_opml(stdscr, conn)
 
 def header(stdscr,text):
     global database
@@ -766,6 +992,16 @@ def display_feeds(stdscr, conn, category):
             mark_all_items_as(conn, feeds[current_feed][0],1)
         elif key == ord("u"):
             mark_all_items_as(conn, feeds[current_feed][0],0)
+        elif key == ord("x"):
+            tts.stop()
+        elif key == ord("s"):
+            height, width = stdscr.getmaxyx()
+            stdscr.addstr(height-1, 0, str("Speak: [T]itle [C]ancel").ljust(width-1), curses.color_pair(4) | curses.A_BOLD)
+            key = stdscr.getch()
+            if key == ord("t"):
+                tts.speak(feeds[current_feed][1])
+            elif key == ord("c"):
+                pass
 
 # Function to display feed items
 def display_feed_items(stdscr, conn, feed,category=""):
@@ -851,24 +1087,73 @@ def display_feed_items(stdscr, conn, feed,category=""):
         elif key == curses.KEY_END:  # End key
             current_item = len(feed_items) - 1  # Scroll to the end
             start_index = max(0, len(feed_items) - max_display)  # Adjust start index if needed
+        elif key == ord("x"):
+            tts.stop()
+        elif key == ord("s"):
+            height, width = stdscr.getmaxyx()
+            stdscr.addstr(height-1, 0, str("Speak: [T]itle c[A]tegory [C]ancel").ljust(width-1), curses.color_pair(4) | curses.A_BOLD)
+            key = stdscr.getch()
+            if key == ord("t"):
+                tts.speak(feed_items[current_item][1])
+            elif key == ord("a"):
+                tts.speak(feed[1])
+            elif key == ord("c"):
+                pass
 
 
-def get_feed_items_bycategory(conn,category):
+def get_feed_items_bycategory(conn, category, search_text=None, search_where='all'):
+    """
+    Get feed items by category with optional search functionality
+    Parameters:
+        conn: Database connection
+        category: Category name to filter by
+        search_text: Optional text to search for
+        search_where: Where to search ('all', 'title', 'content', 'summary')
+    Returns:
+        List of feed items matching the criteria
+    """
     cursor = conn.cursor()
+    
+    # Base SQL query
     sql = """SELECT fi.id, fi.title, fi.summary, fi.is_read, fi.last_updated, fi.created, fi.link,
-f.name as feed_name
-FROM feed_items fi
-JOIN feeds f ON fi.feed_id = f.id
-JOIN feed_categories fc ON f.id = fc.feed_id
-JOIN categories c ON fc.category_id = c.id
-WHERE c.name = ?
-ORDER BY fi.last_updated DESC"""
-    cursor.execute( sql , (category,))
+             f.name as feed_name
+             FROM feed_items fi
+             JOIN feeds f ON fi.feed_id = f.id
+             JOIN feed_categories fc ON f.id = fc.feed_id
+             JOIN categories c ON fc.category_id = c.id
+             WHERE c.name = ?"""
+    
+    params = [category]
+    
+    # Add search conditions if search_text is provided
+    if search_text:
+        search_text = f"%{search_text}%"  # Add wildcards for LIKE query
+        if search_where == 'title':
+            sql += " AND fi.title LIKE ?"
+            params.append(search_text)
+        elif search_where == 'content':
+            sql += " AND fi.content LIKE ?"
+            params.append(search_text)
+        elif search_where == 'summary':
+            sql += " AND fi.summary LIKE ?"
+            params.append(search_text)
+        else:  # 'all' - search in title, content, and summary
+            sql += """ AND (
+                fi.title LIKE ? OR 
+                fi.content LIKE ? OR 
+                fi.summary LIKE ?
+            )"""
+            params.extend([search_text] * 3)
+    
+    # Add ordering
+    sql += " ORDER BY fi.last_updated DESC"
+    
+    cursor.execute(sql, params)
     return cursor.fetchall()
 
 # Display Feed items by category
-def display_category_feed_items(stdscr, conn, category=""):
-    feed_items = get_feed_items_bycategory(conn,category)
+def display_category_feed_items(stdscr, conn, category="", search_text=None, search_where='all'):
+    feed_items = get_feed_items_bycategory(conn,category, search_text,search_where)
     current_item = 0
     start_index = 0  # Track the starting index for display
     
@@ -924,17 +1209,17 @@ def display_category_feed_items(stdscr, conn, category=""):
             if len(feed_items) > 0:
                 mark_item_as_read(conn, feed_items[current_item][0])
                 display_feed_entry(stdscr, conn, feed_items[current_item])
-                feed_items = get_feed_items_bycategory(conn,category)
+                feed_items = get_feed_items_bycategory(conn,category,search_text,search_where)
         elif key == 27 or key == curses.KEY_LEFT:  # ESC key
             break
         elif key == ord("q"):
             exit(0)
         elif key == ord("r"):  # Mark Category as read
             mark_item_as_read(conn, feed_items[current_item][0])
-            feed_items = get_feed_items_bycategory(conn,category)
+            feed_items = get_feed_items_bycategory(conn,category,search_text,search_where)
         elif key == ord("u"):  # Mark Category as unread
             mark_item_as_read(conn, feed_items[current_item][0],0)
-            feed_items = get_feed_items_bycategory(conn,category)
+            feed_items = get_feed_items_bycategory(conn,category,search_text,search_where)
         elif key == ord("h"):
             display_help_feed_items(stdscr)
         elif key == curses.KEY_HOME:  # Home key
@@ -943,6 +1228,16 @@ def display_category_feed_items(stdscr, conn, category=""):
         elif key == curses.KEY_END:  # End key
             current_item = len(feed_items) - 1  # Scroll to the end
             start_index = max(0, len(feed_items) - max_display)  # Adjust start index if needed        
+        elif key == ord("x"):
+            tts.stop()
+        elif key == ord("s"): 
+            height, width = stdscr.getmaxyx()
+            stdscr.addstr(height-1, 0, str("Speak: [T]itle [C]ancel").ljust(width-1), curses.color_pair(4) | curses.A_BOLD)
+            key = stdscr.getch()
+            if key == ord("t"):
+                tts.speak(feed_items[current_item][1])
+            elif key == ord("c"):
+                pass
 
 # Function to mark an item as read
 def mark_item_as_read(conn, item_id,read=1):
@@ -984,6 +1279,7 @@ def display_feed_entry(stdscr, conn, feed_item):
 
     # Wrap the text to fit the terminal width
     max_length = maxlength(stdscr) - 1  # Leave space for cursor
+
     wrapped_lines = []
 
     lines = plain_text.splitlines()  # Split the text into lines
@@ -1055,10 +1351,25 @@ def display_feed_entry(stdscr, conn, feed_item):
         elif key == ord("4"):
             pyperclip.copy(content)
             footerpop(stdscr,"Content copied to clipboard")
+        elif key == ord("x"):
+            tts.stop()
+        elif key == ord("s"):
+            height, width = stdscr.getmaxyx()
+            stdscr.addstr(height-1, 0, str("Speak: [T]itle [D]ate [B]ody [C]ancel").ljust(width-1), curses.color_pair(4) | curses.A_BOLD)
+            key = stdscr.getch()
+            if key == ord("t"):
+                tts.speak(title)
+            elif key == ord("d"):
+                tts.speak(f"{time.strftime('%Y-%m-%d / %H:%M:%S', time.localtime(last_updated))}")
+            elif key == ord("b"):
+                tts.speak(SPEAK + ' "' + str(lines).strip())
+            elif key == ord("c"):
+                pass
 
 
-def footerpop(stdscr,text,delay=2):
-    footer(stdscr, text, 3)
+
+def footerpop(stdscr,text,delay=2,color=3):
+    footer(stdscr, text, color)
     stdscr.refresh()
     time.sleep(delay)  # Show feedback for a moment
 
@@ -1204,13 +1515,19 @@ def initialize_screen(stdscr, conn):
 
 # Main function
 def main():
-    global feedfile
+    global feedfile, database
+    args = parse_arguments()  # Parse command line arguments
+    feedfile = args.file  # Update feedfile with command line argument if provided
+    database = os.path.splitext(feedfile)[0] + '.sq3'
     load_config() # Load user defined variables
     check_feed_file() # Check feed file, add default if not exist
     conn = setup_database()
-    csv_file = feedfile  # Path to your CSV file
-    load_feeds_to_db(csv_file, conn)
+    load_feeds_to_db(feedfile, conn)
     curses.wrapper(lambda stdscr: initialize_screen(stdscr, conn))
 
 if __name__ == "__main__":
+    tts = InterruptibleTTS()
+    status = os.system(f"dpkg -s espeak > /dev/null 2>&1")
+    if status == 0:
+        tts.enabled = True
     main()
