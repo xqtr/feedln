@@ -266,11 +266,13 @@ def export_opml(stdscr, conn, filename="feedln.opml"):
 
         # Second pass: write feeds organized by category
         for category in sorted(categories.keys()):
+            category = category.replace("&","&amp;")
             opml += f'    <outline text="{category}" title="{category}">\n'
             for feed in categories[category]:
                 title = feed[0].replace('"', '&quot;')
                 url = feed[1].replace('"', '&quot;')
                 tags = feed[3] if feed[3] else ''
+                title = title.replace("&","&amp;")
                 opml += f'      <outline type="rss" text="{title}" title="{title}" xmlUrl="{url}"'
                 if tags:
                     opml += f' category="{tags}"'
