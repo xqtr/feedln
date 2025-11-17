@@ -25,12 +25,14 @@ cfgfile = "feedln.cfg"
 logfile = "feedln.log"
 reqtimeout = 8
 
-browser = os.environ["BROWSER"] #get settings from environment
-media = os.environ["PLAYER"] #"mpv"
+browser = os.environ["BROWSER"]  # get settings from environment
+media = os.environ["PLAYER"]  # "mpv"
 xterm = "-fa 'Monospace' -fs 14"
 editor = os.environ["EDITOR"]
 
 SPEAK = "espeak"
+FETCHONLOAD = False
+
 
 class InterruptibleTTS:
     def __init__(self):
@@ -45,12 +47,13 @@ class InterruptibleTTS:
         if not self.enabled: return
         self.thread = threading.Thread(target=run)
         self.thread.start()
-    
+
     def stop(self):
         if not self.enabled: return
         if self.speaking:
             os.system("killall espeak >/dev/null 2>&1")
             self.speaking = False
+
 
 logging.basicConfig(
     filename=logfile,  # Log file name
@@ -58,17 +61,22 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'  # Log message format
 )
 
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description=f'{program} v{version} - RSS Feed Reader')
     parser.add_argument('-f', '--file', 
                         help='Path to CSV file containing feeds (default: feedln.csv)',
                         default=feedfile)
+    parser.add_argument('-F', '--fetch', action='store_true',
+                        help='Fetch all feeds, on load')
     return parser.parse_args()
+
 
 def log_event(message):
     """Log an event with the specified message."""
     logging.info(message)  # Log the message as an info level event
+
 
 def load_config():
     global media, xterm, editor,reqtimeout, media, browser, xterm, editor, reqtimeout
@@ -104,6 +112,7 @@ def is_program_installed(program_name):
         return True
     except subprocess.CalledProcessError:
         return False
+
 
 # Database setup
 def setup_database():
@@ -152,6 +161,7 @@ def setup_database():
     conn.commit()
     return conn
 
+
 def confirm(stdscr,text):
     footer(stdscr,text)
     stdscr.move(curses.LINES-1, 1)
@@ -171,13 +181,14 @@ def confirm(stdscr,text):
         stdscr.addstr(curses.LINES-1, len(text), confirmation+" ", curses.color_pair(2)|curses.A_BOLD)  # Display current input
         stdscr.move(curses.LINES-1, len(text)+len(confirmation))
         stdscr.refresh()
-    
+
     curses.curs_set(0)
     if confirmation.lower() == 'yes':
         return True
     else:
         return False
-        
+
+
 def clean_database(stdscr):
     global database,feedfile
     if confirm(stdscr,"Clean old feed items? Write 'yes' to confirm:"):
@@ -193,10 +204,10 @@ def clean_database(stdscr):
                 footer(stdscr,f"Error: {e}",1)
                 stdscr.refresh()
                 time.sleep(2)
-        
     else:
         footerpop(stdscr,"Reset canceled.")
- 
+
+
 def delete_database_file(stdscr):
     global database,feedfile
     if confirm(stdscr,"Reset database? Write 'yes' to confirm:"):
@@ -219,10 +230,11 @@ def delete_database_file(stdscr):
             stdscr.refresh()
             time.sleep(2)
     else:
-        footerpop(stdscr,"Reset canceled.")
+        footerpop(stdscr, "Reset canceled.")
     curses.curs_set(0)
 
-#Export all feeds to OPML file
+
+# Export all feeds to OPML file
 def export_opml(stdscr, conn, filename="feedln.opml"):
     """
     Export feeds from database to OPML format
@@ -254,7 +266,7 @@ def export_opml(stdscr, conn, filename="feedln.opml"):
 
         # Track unique categories
         categories = {}
-        
+
         # First pass: organize feeds by category
         for feed in feeds:
             feed_categories = feed[2].split(',') if feed[2] else ['Uncategorized']
@@ -294,6 +306,7 @@ def export_opml(stdscr, conn, filename="feedln.opml"):
     except Exception as e:
         footerpop(stdscr, f"Error exporting OPML: {str(e)}", 1)
         log_event(f"Error exporting OPML: {str(e)}")
+
 
 # Load feeds from CSV into database
 def load_feeds_to_db(csv_file, conn):
@@ -343,6 +356,7 @@ def load_feeds_to_db(csv_file, conn):
                     pass
     conn.commit()
 
+
 # Fetch categories from database
 def fetch_categories(conn, orderby=1):
     if orderby == 1:
@@ -373,12 +387,13 @@ def fetch_categories(conn, orderby=1):
             GROUP BY c.name, c.id
             ORDER BY unread_count DESC, c.name ASC
         """)
-    
+
     categories = cursor.fetchall()
     # If using unread count query, strip the count from result
-    #if orderby == 3:
+    # if orderby == 3:
     #    return [(category[0], category[1]) for category in categories]
     return [(category[0], category[1]) for category in categories]
+
 
 # Fetch feeds by category
 def fetch_feeds_by_category(conn, category, orderby='c.name'):
@@ -419,10 +434,11 @@ def fetch_feeds_by_category(conn, category, orderby='c.name'):
     feeds = cursor.fetchall()
     return feeds  # Return the list of feeds
 
+
 # Fetch items for a feed
 def fetch_feed_items(conn, feed_id,sort=1):
     #1 sort by date
-    #2 sort by title
+    # 2 sort by title
     cursor = conn.cursor()
     if sort == 1:
         sql = "SELECT id, title, summary, is_read, last_updated, created, link FROM feed_items WHERE feed_id = ? ORDER BY last_updated DESC"
@@ -432,6 +448,7 @@ def fetch_feed_items(conn, feed_id,sort=1):
         sql , (feed_id,)
     )
     return cursor.fetchall()
+
 
 # Update feed items in database
 def update_feed_items(stdscr,conn, feed):
@@ -628,7 +645,7 @@ def display_help_categories(stdscr):
         "e: Edit Feeds with text editor\n"
         "s: Speak Text Menu\n"
         "x: Stop Speaking\n"
-        "/: Search Categorie for Text\n"
+        "/: Search Categories for Text\n"
         "l: Watch log file, if Exists, with External Editor\n"
         "!: Delete Database file. Reopen the Program!\n"
         "#: Clear Database from Feeds, that don't Exist in Feeds File\n"
@@ -753,15 +770,21 @@ def search_category(stdscr, conn, category):
         feed_items = get_feed_items_bycategory(conn, category, search_text, search_where)
         display_category_feed_items(stdscr, conn, category,search_text,search_where)
 
+
 # Function to display categories
 def display_categories(stdscr, conn):
-    global feedfile, editor, xterm, logfile
+    global feedfile, editor, xterm, logfile, FETCHONLOAD
     curses.curs_set(0)  # Disable cursor
     orderi = 3
     categories = fetch_categories(conn,orderi)
 
     current_category = 0
     start_index = 0  # Track the starting index for display
+
+    if FETCHONLOAD:
+        FETCHONLOAD = False
+        for cat in categories:
+            update_feeds_by_category(conn, cat[0], stdscr)
 
     while True:
         max_display = curses.LINES - 2  # Maximum number of categories to display
@@ -1515,17 +1538,20 @@ def initialize_screen(stdscr, conn):
     curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_GREEN)
     display_categories(stdscr, conn)  # Call the display function after initializing colors 
 
+
 # Main function
 def main():
-    global feedfile, database
+    global feedfile, database, FETCHONLOAD
     args = parse_arguments()  # Parse command line arguments
     feedfile = args.file  # Update feedfile with command line argument if provided
+    FETCHONLOAD = args.fetch
     database = os.path.splitext(feedfile)[0] + '.sq3'
-    load_config() # Load user defined variables
-    check_feed_file() # Check feed file, add default if not exist
+    load_config()  # Load user defined variables
+    check_feed_file()  # Check feed file, add default if not exist
     conn = setup_database()
     load_feeds_to_db(feedfile, conn)
     curses.wrapper(lambda stdscr: initialize_screen(stdscr, conn))
+
 
 if __name__ == "__main__":
     tts = InterruptibleTTS()
