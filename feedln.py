@@ -25,10 +25,15 @@ cfgfile = "feedln.cfg"
 logfile = "feedln.log"
 reqtimeout = 8
 
-browser = os.environ["BROWSER"]  # get settings from environment
-media = os.environ["PLAYER"]  # "mpv"
+try:
+    browser = os.environ["BROWSER"] #get settings from environment
+    media = os.environ["PLAYER"] #"mpv"
+    editor = os.environ["EDITOR"]
+except:
+    browser = "firefox"
+    editor = 'nano'
+    media = 'mpv'
 xterm = "-fa 'Monospace' -fs 14"
-editor = os.environ["EDITOR"]
 
 SPEAK = "espeak"
 FETCHONLOAD = False
